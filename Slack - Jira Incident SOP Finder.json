@@ -1,0 +1,246 @@
+{
+  "name": "Slack - Jira Incident SOP Finder",
+  "nodes": [
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://johnwick300923.atlassian.net/rest/api/3/search/jql",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({\n  jql: `summary ~ \"${$json[\"searchText\"]}\" OR description ~ \"${$json[\"searchText\"]}\"`,\n  fields: [\"key\",\"summary\",\"description\"],\n  maxResults: 5\n}) }}\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        352,
+        0
+      ],
+      "id": "22318545-7951-4b5a-b29a-9a9466a8f1e6",
+      "name": "HTTP Request",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "50J3KPnalFTZDhhu",
+          "name": "Unnamed credential 4"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://johnwick300923.atlassian.net/rest/api/3/issue/SUP-1",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "fields",
+              "value": "key,summary,description"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        144,
+        -688
+      ],
+      "id": "982f4cf4-7dad-4589-879b-024350e68429",
+      "name": "HTTP Request1",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "50J3KPnalFTZDhhu",
+          "name": "Unnamed credential 4"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "trigger": [
+          "message",
+          "any_event"
+        ],
+        "watchWorkspace": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.slackTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "200636db-af03-4521-a722-37fbb49dc04b",
+      "name": "Slack Trigger",
+      "webhookId": "76162774-327f-456e-8863-c06f9de44138",
+      "executeOnce": false,
+      "credentials": {
+        "slackApi": {
+          "id": "miFHuUucdC9BHacD",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c9040444-33f9-443d-aea2-29ca287427f9",
+              "name": "searchText",
+              "value": "={{ $json.blocks[0].elements[0].elements[0].text }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        176,
+        0
+      ],
+      "id": "48b9949b-06e9-497e-b8b0-63e73825ad02",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract SOP/runbook URL from Jira issue search response (handles storage-format description)\nconst jiraNodeName = \"Search Jira Incidents\";\nlet jiraJson;\ntry {\n  jiraJson = $node[jiraNodeName].json;\n} catch (err) {\n  jiraJson = items[0] ? items[0].json : {};\n}\n\nconst issues = jiraJson.issues || [];\n\nfunction walkAndCollectTextAndLinks(node, acc) {\n  if (!node) return;\n  if (typeof node === \"string\") {\n    acc.textParts.push(node);\n    return;\n  }\n  if (Array.isArray(node)) {\n    node.forEach(n => walkAndCollectTextAndLinks(n, acc));\n    return;\n  }\n  if (node.text) {\n    acc.textParts.push(node.text);\n    if (node.marks && Array.isArray(node.marks)) {\n      node.marks.forEach(mark => {\n        if (mark.type === \"link\" && mark.attrs && mark.attrs.href) {\n          acc.linkCandidates.push(mark.attrs.href);\n        }\n      });\n    }\n  }\n  if (node.attrs && node.attrs.href) {\n    acc.linkCandidates.push(node.attrs.href);\n  }\n  if (node.content) {\n    walkAndCollectTextAndLinks(node.content, acc);\n  }\n}\n\nfunction extractFirstUrlFromText(text) {\n  if (!text) return null;\n  const m = text.match(/\\bhttps?:\\/\\/[^\\s)>\\]]+/i);\n  if (!m) return null;\n  return m[0].replace(/[.,;:)\\]]+$/,'');\n}\n\nconst out = [];\n\nif (issues.length === 0) {\n  out.push({ json: { found: false, issuesCount: 0, sopUrl: null, message: \"No issues found\" } });\n} else {\n  const issue = issues[0]; // first match\n  const key = issue.key || null;\n  const fields = issue.fields || {};\n  const summary = fields.summary || null;\n  const description = fields.description || null;\n\n  let plainText = \"\";\n  let sopUrl = null;\n\n  if (typeof description === \"string\") {\n    plainText = description;\n    sopUrl = extractFirstUrlFromText(plainText);\n  } else {\n    const acc = { textParts: [], linkCandidates: [] };\n    walkAndCollectTextAndLinks(description, acc);\n    plainText = acc.textParts.join(\"\\n\");\n    if (acc.linkCandidates.length > 0) {\n      sopUrl = acc.linkCandidates[0];\n    } else {\n      sopUrl = extractFirstUrlFromText(plainText);\n    }\n    if (sopUrl) sopUrl = sopUrl.replace(/[.,;:)\\]]+$/,'');\n  }\n\n  out.push({\n    json: {\n      found: !!sopUrl,\n      sopUrl: sopUrl || null,\n      issueKey: key,\n      summary,\n      descriptionPlain: plainText,\n      issuesCount: issues.length,\n      message: sopUrl ? `Found runbook: ${sopUrl}` : `No runbook URL found in description`\n    }\n  });\n}\n\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        528,
+        0
+      ],
+      "id": "f77860bb-7b91-4ffb-8992-1d077acd497b",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b03255e0-9d6e-40bd-b0b7-6045a0423990",
+              "leftValue": "={{ $json.sopUrl }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        720,
+        0
+      ],
+      "id": "2683c016-11db-42aa-8afc-82db352b2b96",
+      "name": "If"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Trigger": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "ad1a33c8-a7db-4078-a54f-d8fcb138ad25",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c85aab2c6795f410b61ff10e81cd82504bb81e5111728a979055582c2e316cd5"
+  },
+  "id": "8gngBitJB351lAIE",
+  "tags": []
+}
